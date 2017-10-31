@@ -122,23 +122,24 @@ class AccountFiscalyearClosing(models.Model):
         return {
             'name': name,
             'src_accounts': tmpl_mapping.src_accounts,
-            'dest_account_id': dest_account,
+            'dest_account_id': dest_account and dest_account.id or False,
         }
 
     def _prepare_type(self, tmpl_type):
         return {
-            'account_type_id': tmpl_type.account_type_id,
+            'account_type_id': tmpl_type.account_type_id.id or False,
             'closing_type': tmpl_type.closing_type,
         }
 
     @api.model
     def _prepare_config(self, tmpl_config, company):
-        mappings = self.env['account.fiscalyear.closing.mapping']
+        mappings = []
         for m in tmpl_config.mapping_ids:
-            mappings += mappings.new(self._prepare_mapping(m, company))
-        types = self.env['account.fiscalyear.closing.type']
+            mappings_data = self._prepare_mapping(m, company)
+            mappings += [(0, 0, mappings_data)]
+        types = []
         for t in tmpl_config.closing_type_ids:
-            types += types.new(self._prepare_type(t))
+            types += [(0, 0, self._prepare_type(t))]
         return {
             'enabled': True,
             'name': tmpl_config.name,
@@ -146,25 +147,46 @@ class AccountFiscalyearClosing(models.Model):
             'code': tmpl_config.code,
             'inverse': tmpl_config.inverse,
             'move_type': tmpl_config.move_type,
-            'journal_id': tmpl_config.journal_id or self._default_journal().id,
+            'journal_id': tmpl_config.journal_id.id
+            or self._default_journal().id,
             'mapping_ids': mappings,
             'closing_type_ids': types,
             'closing_type_default': tmpl_config.closing_type_default,
             'reconcile': tmpl_config.reconcile,
+            'fyc_id': self.id,
         }
 
     @api.onchange('template_id')
     def onchange_template_id(self):
         self.move_config_ids = False
+
+    @api.model
+    def _create_config(self):
         if not self.template_id:
             return
         config_obj = self.env['account.fiscalyear.closing.config']
         tmpl = self.template_id
         self.check_draft_moves = tmpl.check_draft_moves
         for tmpl_config in tmpl.move_config_ids:
-            self.move_config_ids += config_obj.new(
+            self.move_config_ids += config_obj.create(
                 self._prepare_config(tmpl_config, self.company_id)
             )
+
+    @api.model
+    def create(self, vals):
+        closing = super(AccountFiscalyearClosing, self).create(vals)
+        if 'template_id' in vals:
+            closing._create_config()
+        return closing
+
+    @api.multi
+    def write(self, vals):
+        rec = super(AccountFiscalyearClosing, self).write(vals)
+        if 'template_id' in vals:
+            for closing in self:
+                closing.move_config_ids = False
+                closing._create_config()
+        return rec
 
     @api.multi
     def draft_moves_check(self):
